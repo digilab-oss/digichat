@@ -363,6 +363,13 @@ func GenerateLimitedClientConfig(c *model.Config, telemetryID string, license *m
 	props["EnableSignUpWithOpenId"] = "false"
 	props["OpenIdButtonText"] = ""
 	props["OpenIdButtonColor"] = ""
+	// DIGILAB: re-enable the GitLab/Authentik SSO login button on unlicensed Team
+	// Edition — upstream b85027e65a ("Move Gitlab SSO to Professional") gated these
+	// behind a license. Set unconditionally here (c.GitLabSettings is always non-nil
+	// after defaults); the licensed OpenId block below harmlessly re-sets them.
+	props["EnableSignUpWithGitLab"] = strconv.FormatBool(*c.GitLabSettings.Enable)
+	props["GitLabButtonColor"] = *c.GitLabSettings.ButtonColor
+	props["GitLabButtonText"] = *c.GitLabSettings.ButtonText
 	props["CWSURL"] = ""
 	props["EnableCustomBrand"] = strconv.FormatBool(*c.TeamSettings.EnableCustomBrand)
 	props["CustomBrandText"] = *c.TeamSettings.CustomBrandText
