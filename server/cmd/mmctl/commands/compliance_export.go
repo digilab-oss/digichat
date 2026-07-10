@@ -1,6 +1,13 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
+// DIGILAB: exclude from Team Edition — this file imports the Source-Available
+// enterprise/message_export/shared package (LICENSE.enterprise). The 'enterprise'
+// build tag is never set in our TE build, so tagging it here drops the file and
+// its in-file compliance-export command registration cleanly from the TE mmctl.
+
+//go:build enterprise
+
 package commands
 
 import (
