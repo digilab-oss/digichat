@@ -33,4 +33,4 @@ jobs:
         with:
           image: ${{ env.IMAGE }}
           registry-user: ${{ secrets.GITLAB_REGISTRY_USER }}
-          registry-token: ${{ secrets.GITLAB_REGISTRY_TOKEN }}
+          registry-token: ${{ secrets.GITLAB_REGISTRY_PASSWORD }}

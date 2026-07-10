@@ -124,8 +124,14 @@ jobs:
           registry-user: ${{ secrets.GITLAB_REGISTRY_USER }}
           registry-token: ${{ secrets.GITLAB_REGISTRY_TOKEN }}
 
-      - name: Publish branch + tags (only after a green build)
-        if: steps.build.outcome == 'success'
+      - name: Require a pushed image (never move the branch without one)
+        if: steps.rebase.outputs.new != '' && steps.build.outputs.pushed != 'true'
+        run: |
+          echo "::error::Sync built the image but did not push it (registry creds missing?). Branch/tags NOT moved."
+          exit 1
+
+      - name: Publish branch + tags (only after a green, pushed build)
+        if: steps.build.outcome == 'success' && steps.build.outputs.pushed == 'true'
         run: |
           source .digilab/version.env
           NEW="$UPSTREAM"; REL="v${NEW#v}-digilab.${PATCHREV}"

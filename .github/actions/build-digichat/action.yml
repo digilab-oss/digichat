@@ -24,8 +24,11 @@ outputs:
     description: Full image ref built (image:tag)
     value: ${{ steps.v.outputs.image_ref }}
   digest:
-    description: Pushed image digest (empty if push=false)
+    description: Pushed image digest (empty if not pushed)
     value: ${{ steps.push.outputs.digest }}
+  pushed:
+    description: Whether the image was actually pushed (true/false)
+    value: ${{ steps.gate.outputs.push }}
 
 runs:
   using: composite
@@ -95,12 +98,31 @@ runs:
       shell: bash
       run: python3 -m http.server 8000 --directory server/dist >/tmp/http.log 2>&1 & sleep 1
 
+    # Push only when asked AND both creds are present. Otherwise we still BUILD the image
+    # (validates the whole buildx/localhost path) but skip the push — so a secret-less run
+    # is a green validation, not a hard stop before the image is ever built. Callers that
+    # MUST push (the sync workflow) check the `pushed` output and fail if it's not 'true'.
+    - name: Resolve push
+      id: gate
+      shell: bash
+      env:
+        U: ${{ inputs.registry-user }}
+        T: ${{ inputs.registry-token }}
+      run: |
+        if [ "${{ inputs.push }}" = "true" ] && [ -n "$U" ] && [ -n "$T" ]; then
+          echo "push=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "push=false" >> "$GITHUB_OUTPUT"
+          [ "${{ inputs.push }}" = "true" ] \
+            && echo "::warning::Registry credentials empty — image BUILT to validate but NOT pushed. Set GITLAB_REGISTRY_USER/GITLAB_REGISTRY_TOKEN to push."
+        fi
+
     - name: Log in to the GitLab registry
-      if: inputs.push == 'true'
+      if: steps.gate.outputs.push == 'true'
       uses: docker/login-action@v3
       with:
         registry: registry.gitlab.com
-        username: ${{ inputs.registry-user }}      # login-action fails clearly if these are empty
+        username: ${{ inputs.registry-user }}
         password: ${{ inputs.registry-token }}
 
     - name: Build image (upstream Dockerfile) and push
@@ -112,7 +134,7 @@ runs:
         network: host                              # RUN steps use host net → reach localhost:8000
         allow: network.host
         build-args: MM_PACKAGE=http://localhost:8000/mattermost-team-linux-amd64.tar.gz
-        push: ${{ inputs.push }}
+        push: ${{ steps.gate.outputs.push }}
         tags: ${{ steps.v.outputs.image_ref }}
         labels: |
           org.opencontainers.image.version=${{ steps.v.outputs.build_number }}
@@ -125,7 +147,7 @@ runs:
 
     - name: Record pushed digest
       id: push
-      if: inputs.push == 'true'
+      if: steps.gate.outputs.push == 'true'
       shell: bash
       run: |
         DIGEST="${{ inputs.image }}@${{ steps.build.outputs.digest }}"   # pin by digest, not tag

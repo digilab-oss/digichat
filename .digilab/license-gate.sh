@@ -42,12 +42,22 @@ if [ -n "$mc" ]; then echo "  FAIL mmctl links enterprise: $mc"; FAIL=1; else ec
 #   the place a stray `BUILD_NUMBER=dev` could enable `sourceavailable` — so we read the
 #   tags baked into the binary and FAIL if either is present. (Belt to check 1's braces.)
 echo "### 2. build tags contain no enterprise/sourceavailable"
+# `make package-*` leaves only the .tar.gz (staging dirs are cleaned), so inspect the
+# binary as *shipped*: extract it from the tarball. Fall back to any unpacked dist binary.
 bin="$(ls dist/*/bin/mattermost dist/mattermost/bin/mattermost 2>/dev/null | head -1 || true)"
+if [ -z "$bin" ]; then
+  tgz="$(ls dist/mattermost-team-linux-amd64.tar.gz 2>/dev/null | head -1 || true)"
+  if [ -n "$tgz" ]; then
+    tmp="$(mktemp -d)"
+    tar -xzf "$tgz" -C "$tmp" mattermost/bin/mattermost 2>/dev/null || true
+    bin="$(ls "$tmp"/mattermost/bin/mattermost 2>/dev/null | head -1 || true)"
+  fi
+fi
 if [ -n "$bin" ] && [ -f "$bin" ]; then
   tags="$(go version -m "$bin" | grep -- '-tags' || echo '(no -tags setting)')"
   echo "  $tags"
   if grep -qE 'enterprise|sourceavailable' <<<"$tags"; then echo "  FAIL enterprise/sourceavailable tag present"; FAIL=1; else echo "  OK   no enterprise/sourceavailable tag"; fi
-else echo "  SKIP: server binary not found under dist/ (run the build first)"; SKIPPED=1; fi
+else echo "  SKIP: no shipped binary found (neither dist/ binary nor tarball) — run the build first"; SKIPPED=1; fi
 
 # WHY 3: the stock image bundles ~14 prepackaged plugins, several of which are
 #   Source-Available/enterprise (Calls, Playbooks, metrics, channel-export). We build
