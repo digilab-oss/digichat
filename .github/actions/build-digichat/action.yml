@@ -1,0 +1,106 @@
+# DIGILAB: build the clean Team-Edition image + license gate + push to the GitLab
+# registry. Shared by digichat-build.yml (manual/tag) and digichat-sync.yml
+# (which rebases the tree in-place first, then calls this on the working copy).
+# The CALLER must checkout (and, for sync, rebase) the repo before invoking this.
+name: build-digichat
+description: Build clean digichat TE image, license-gate, and push to the GitLab registry.
+
+inputs:
+  image:
+    description: Image repository (no tag), e.g. registry.gitlab.com/.../digichat
+    required: true
+  registry-user:
+    description: GitLab registry username (deploy token)
+    required: true
+  registry-token:
+    description: GitLab registry token (write_registry)
+    required: true
+  push:
+    description: Push the image after building
+    default: 'true'
+
+outputs:
+  image-ref:
+    description: Full image ref built (image:tag)
+    value: ${{ steps.v.outputs.image_ref }}
+  digest:
+    description: Pushed image digest (empty if push=false)
+    value: ${{ steps.push.outputs.digest }}
+
+runs:
+  using: composite
+  steps:
+    - name: Derive version
+      id: v
+      shell: bash
+      run: |
+        source .digilab/version.env                            # UPSTREAM, UPSTREAM_SHA, PATCHREV
+        BASE="${UPSTREAM#v}"
+        BN="${BASE}-digilab.${PATCHREV}"
+        TAG="${BN}-${GITHUB_SHA::7}"
+        {
+          echo "build_number=${BN}"
+          echo "image_tag=${TAG}"
+          echo "image_ref=${{ inputs.image }}:${TAG}"
+          echo "upstream=${UPSTREAM}"
+          echo "upstream_sha=${UPSTREAM_SHA}"
+        } >> "$GITHUB_OUTPUT"
+
+    - uses: actions/setup-go@v5
+      with: { go-version-file: server/.go-version }            # upstream's pinned Go
+    - uses: actions/setup-node@v4
+      with: { node-version-file: .nvmrc }
+
+    # Guard the base version so we can't tag an image 11.7.7 while shipping 11.7.6
+    # (e.g. rebased but forgot to bump version.env:UPSTREAM).
+    - name: Guard — source == version.env UPSTREAM
+      shell: bash
+      run: |
+        WANT="${{ steps.v.outputs.upstream }}"; WANT="${WANT#v}"
+        grep -q "\"${WANT}\"," server/public/model/version.go \
+          || { echo "source version.go != ${WANT} (version.env:UPSTREAM) — rebased but version.env not bumped?"; exit 1; }
+    - name: Guard — our changes present
+      shell: bash
+      run: |
+        test "$(grep -rl 'DIGILAB:' server | wc -l)" -ge 3 \
+          || { echo "fewer than 3 DIGILAB-marked files — our commits missing (built clean upstream?)"; exit 1; }
+
+    - name: Build (clean Team Edition — no enterprise dir, real BUILD_NUMBER, no plugins)
+      shell: bash
+      working-directory: server
+      run: |
+        make build-client build-linux-amd64 package-linux-amd64 \
+          BUILD_NUMBER='${{ steps.v.outputs.build_number }}' PLUGIN_PACKAGES=
+        ls -la dist/*linux-amd64.tar.gz
+
+    - name: License gate (fail on Source-Available / non-permissive)
+      shell: bash
+      run: .digilab/license-gate.sh
+
+    - name: Build image (upstream Dockerfile, from local dist)
+      shell: bash
+      run: |
+        python3 -m http.server 8000 --directory server/dist >/tmp/http.log 2>&1 &
+        sleep 1
+        docker build --network=host -f server/build/Dockerfile \
+          --build-arg MM_PACKAGE=http://localhost:8000/mattermost-team-linux-amd64.tar.gz \
+          --label org.opencontainers.image.version='${{ steps.v.outputs.build_number }}' \
+          --label org.opencontainers.image.source=https://github.com/${{ github.repository }} \
+          --label org.opencontainers.image.revision=${{ github.sha }} \
+          --label nl.digilab.upstream-version='${{ steps.v.outputs.upstream }}' \
+          --label nl.digilab.upstream-sha='${{ steps.v.outputs.upstream_sha }}' \
+          -t "${{ steps.v.outputs.image_ref }}" server/build/
+
+    - name: Push to GitLab registry
+      id: push
+      if: inputs.push == 'true'
+      shell: bash
+      env:
+        U: ${{ inputs.registry-user }}
+        T: ${{ inputs.registry-token }}
+      run: |
+        echo "$T" | docker login registry.gitlab.com -u "$U" --password-stdin
+        docker push "${{ steps.v.outputs.image_ref }}"
+        DIGEST="$(docker inspect --format '{{index .RepoDigests 0}}' "${{ steps.v.outputs.image_ref }}")"
+        echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+        echo "Pushed: $DIGEST" | tee "$GITHUB_STEP_SUMMARY"

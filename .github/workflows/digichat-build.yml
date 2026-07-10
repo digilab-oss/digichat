@@ -1,0 +1,35 @@
+# DIGILAB: build the patched Team-Edition image on a NATIVE amd64 runner and push
+# to the private GitLab registry. No end-to-end tests — we rely on upstream QA.
+# (Inherited Mattermost e2e/CI workflows are gated on repository_owner=='mattermost'
+# and self-skip in this fork; disable them in repo Settings→Actions if you want zero noise.)
+name: digichat-build
+
+on:
+  workflow_dispatch:               # manual: Actions → digichat-build → Run workflow
+  push:
+    tags: ['v*-digilab*']          # or push a tag like v11.7.6-digilab.1
+
+permissions:
+  contents: read
+
+concurrency:                       # one build per ref; cancel superseded runs
+  group: digichat-build-${{ github.ref }}
+  cancel-in-progress: true
+
+# Required repo secrets (Settings → Secrets and variables → Actions):
+#   GITLAB_REGISTRY_USER  — GitLab deploy-token username (e.g. gitlab+deploy-token-NN)
+#   GITLAB_REGISTRY_TOKEN — that deploy token's value; scope: write_registry (+read_registry)
+
+env:
+  IMAGE: registry.gitlab.com/digilab.overheid.nl/ecosystem/messaging/digichat
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04           # native amd64 — no Rosetta, no cross-build quirks
+    steps:
+      - uses: actions/checkout@v4    # the patched release-11.7-digilab branch
+      - uses: ./.github/actions/build-digichat
+        with:
+          image: ${{ env.IMAGE }}
+          registry-user: ${{ secrets.GITLAB_REGISTRY_USER }}
+          registry-token: ${{ secrets.GITLAB_REGISTRY_TOKEN }}
