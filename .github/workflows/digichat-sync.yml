@@ -27,7 +27,7 @@ jobs:
   sync:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with: { ref: release-11.7-digilab, fetch-depth: 0 }
 
       - name: git identity + upstream remote

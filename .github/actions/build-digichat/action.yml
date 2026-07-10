@@ -47,9 +47,14 @@ runs:
         } >> "$GITHUB_OUTPUT"
 
     - uses: actions/setup-go@v5
-      with: { go-version-file: server/.go-version }            # upstream's pinned Go
-    - uses: actions/setup-node@v4
-      with: { node-version-file: .nvmrc }
+      with:
+        go-version-file: server/.go-version                    # upstream's pinned Go
+        cache-dependency-path: server/go.sum                   # cache Go module + build cache
+    - uses: actions/setup-node@v5
+      with:
+        node-version-file: .nvmrc
+        cache: npm                                             # cache the npm download cache
+        cache-dependency-path: webapp/package-lock.json
 
     # Guard the base version so we can't tag an image 11.7.7 while shipping 11.7.6
     # (e.g. rebased but forgot to bump version.env:UPSTREAM).

@@ -7,7 +7,8 @@ name: digichat-build
 on:
   workflow_dispatch:               # manual: Actions → digichat-build → Run workflow
   push:
-    tags: ['v*-digilab*']          # or push a tag like v11.7.6-digilab.1
+    branches: ['release-11.7-digilab']  # every push to our branch builds
+    tags: ['v*-digilab*']               # or push a tag like v11.7.6-digilab.1
 
 permissions:
   contents: read
@@ -27,7 +28,7 @@ jobs:
   build:
     runs-on: ubuntu-24.04           # native amd64 — no Rosetta, no cross-build quirks
     steps:
-      - uses: actions/checkout@v4    # the patched release-11.7-digilab branch
+      - uses: actions/checkout@v5    # the patched release-11.7-digilab branch
       - uses: ./.github/actions/build-digichat
         with:
           image: ${{ env.IMAGE }}
