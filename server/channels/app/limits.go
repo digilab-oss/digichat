@@ -10,8 +10,11 @@ import (
 )
 
 const (
-	maxUsersLimit     = 200
-	maxUsersHardLimit = 250
+	// DIGILAB: remove the v11 Team Edition user cap. GetServerLimits only applies
+	// the unlicensed cap when maxUsersLimit > 0, and isAtUserLimit short-circuits
+	// when the hard limit is 0 — so zeroing both disables the cap entirely.
+	maxUsersLimit     = 0
+	maxUsersHardLimit = 0
 )
 
 func (a *App) GetServerLimits() (*model.ServerLimits, *model.AppError) {
