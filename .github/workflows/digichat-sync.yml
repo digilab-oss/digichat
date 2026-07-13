@@ -10,6 +10,14 @@ on:
   schedule:
     - cron: '17 4 * * *'        # daily 04:17 UTC
   workflow_dispatch:
+    inputs:
+      branch:
+        description: Branch to sync (point at a throwaway branch rigged to an OLDER tag to test an upgrade)
+        default: release-11.7-digilab
+      dry_run:
+        description: Rebase + build + gate but push NOTHING (safe end-to-end pipeline test)
+        type: boolean
+        default: false
 
 permissions:
   contents: write               # push the rebased branch + tags (needs an unprotected branch,
@@ -21,14 +29,16 @@ concurrency:
 
 env:
   IMAGE: registry.gitlab.com/digilab.overheid.nl/ecosystem/messaging/digichat
-  BRANCH: release-11.7-digilab
+  BRANCH: ${{ github.event.inputs.branch || 'release-11.7-digilab' }}   # dispatch can override to test
 
 jobs:
   sync:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
-        with: { ref: release-11.7-digilab, fetch-depth: 0 }
+        with:
+          ref: ${{ env.BRANCH }}
+          fetch-depth: 0
 
       - name: git identity + upstream remote
         run: |
@@ -123,15 +133,20 @@ jobs:
           image: ${{ env.IMAGE }}
           registry-user: ${{ secrets.GITLAB_REGISTRY_USER }}
           registry-token: ${{ secrets.GITLAB_REGISTRY_TOKEN }}
+          push: ${{ github.event.inputs.dry_run != 'true' }}   # dry_run builds+gates but doesn't push
+
+      - name: Dry run — nothing pushed
+        if: steps.rebase.outputs.new != '' && github.event.inputs.dry_run == 'true'
+        run: echo "### DRY RUN — rebased onto ${{ steps.check.outputs.latest }}, built + license-gated, pushed NOTHING." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Require a pushed image (never move the branch without one)
-        if: steps.rebase.outputs.new != '' && steps.build.outputs.pushed != 'true'
+        if: steps.rebase.outputs.new != '' && steps.build.outputs.pushed != 'true' && github.event.inputs.dry_run != 'true'
         run: |
           echo "::error::Sync built the image but did not push it (registry creds missing?). Branch/tags NOT moved."
           exit 1
 
       - name: Publish branch + tags (only after a green, pushed build)
-        if: steps.build.outcome == 'success' && steps.build.outputs.pushed == 'true'
+        if: steps.build.outcome == 'success' && steps.build.outputs.pushed == 'true' && github.event.inputs.dry_run != 'true'
         run: |
           source .digilab/version.env
           NEW="$UPSTREAM"; REL="v${NEW#v}-digilab.${PATCHREV}"
