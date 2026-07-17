@@ -1,6 +1,13 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
+// DIGILAB: the //go:build line below compiles this file only when the 'enterprise' build tag
+// is set, which our Team Edition build never does. Its sibling compliance_export.go carries the
+// same tag (we exclude it to keep Source-Available code out of the image); these tests use it,
+// so they must be excluded too — otherwise `go test ./cmd/mmctl/...` won't compile (it would
+// reference code that isn't built).
+//go:build enterprise
+
 package commands
 
 import (
