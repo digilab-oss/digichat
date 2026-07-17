@@ -1,0 +1,174 @@
+# DIGILAB: automated ESR security-fix uptake. Daily:
+#   check-upstream → new v11.7.x? → git rebase --onto it → build → license-gate →
+#   push image → on success: force-push the branch, push the base tag and our release tag.
+# On a rebase conflict or a build failure it doesn't move the branch; it opens a GitHub
+# issue for the maintainers. Deploy stays gated (a reviewed digest-pin MR on the Flux side
+# rolls the new image out).
+name: digichat-sync
+
+on:
+  schedule:
+    - cron: '17 4 * * *'        # daily 04:17 UTC
+  workflow_dispatch:               # manual trigger. Runs on whatever branch you pick in the UI's
+    # "Use workflow from" selector, so there's no custom `branch` input to duplicate it. To
+    # rehearse an upgrade, dispatch from a throwaway branch rigged to an older tag, then undo
+    # (delete the branch and the throwaway image tag).
+
+permissions:
+  contents: write               # push the rebased branch + tags (needs an unprotected branch,
+  issues: write                 # or a PAT if release-11.7-digilab is protected)
+
+concurrency:
+  group: digichat-sync       # never two syncs at once
+  cancel-in-progress: false
+
+env:
+  IMAGE: registry.gitlab.com/digilab.overheid.nl/ecosystem/messaging/digichat
+  BRANCH: ${{ github.ref_name }}   # the branch this run was triggered on (schedule: the default
+                                   # branch, release-11.7-digilab; dispatch: the ref you pick).
+                                   # Derived rather than hardcoded, so it survives ESR renames.
+
+jobs:
+  sync:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.BRANCH }}
+          fetch-depth: 0
+
+      - name: git identity + upstream remote
+        run: |
+          git config user.name  "digichat-sync[bot]"
+          git config user.email "digichat-sync@users.noreply.github.com"
+          git remote get-url upstream >/dev/null 2>&1 \
+            || git remote add upstream https://github.com/mattermost/mattermost.git
+
+      - name: Check upstream ESR line
+        id: check
+        run: |
+          set +e; .digilab/check-upstream.sh; echo "code=$?" >> "$GITHUB_OUTPUT"
+          # check-upstream also wrote latest=<tag> to $GITHUB_OUTPUT
+
+      - name: ESR line ended → open issue
+        if: steps.check.outputs.code == '2'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue create --label sync-failure \
+            --title "digichat: ESR line ended, manual ESR jump needed" \
+            --body "check-upstream.sh found no more tags on our ESR minor line. A maintainer must move to the next ESR (bump the minor in .digilab/version.env and rebase our commits onto the next ESR's first tag)." || true
+
+      - name: Up to date
+        if: steps.check.outputs.code == '0'
+        run: echo "No newer v11.7.x, nothing to do."
+
+      # check-upstream exits 0/2/3/4 by design; anything else (e.g. 1 from a git ls-remote
+      # network failure) means it checked nothing. Fail rather than report "up to date", which
+      # would be wrong if the network just died.
+      - name: Unexpected check-upstream exit → fail the run
+        if: steps.check.outputs.code != '0' && steps.check.outputs.code != '2' && steps.check.outputs.code != '3' && steps.check.outputs.code != '4'
+        run: |
+          echo "::error::check-upstream.sh exited ${{ steps.check.outputs.code }} (e.g. network failure); checked nothing, not proceeding."
+          exit 1
+
+      - name: Pinned tag moved/deleted upstream → open issue
+        if: steps.check.outputs.code == '4'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue create --label sync-failure \
+            --title "digichat: upstream force-moved/deleted our pinned tag, investigate" \
+            --body "check-upstream.sh found our pinned tag no longer points at the commit we pinned (UPSTREAM_SHA in .digilab/version.env). Our builds are unaffected (we rebase onto the SHA, never the moving tag), but a maintainer should confirm why upstream re-tagged before bumping." \
+            || echo "::warning::could not open the tag-moved issue"
+          # Fail the run so a moved pinned tag is visible, rather than passing silently if the
+          # issue couldn't be filed. Our builds are unaffected; an administrator just confirms it.
+          exit 1
+
+      - name: Rebase our commits onto the new commit (by SHA)
+        if: steps.check.outputs.code == '3'
+        id: rebase
+        run: |
+          source .digilab/version.env
+          OLD_SHA="$UPSTREAM_SHA"
+          NEW="${{ steps.check.outputs.latest }}"
+          NEW_SHA="${{ steps.check.outputs.latest_sha }}"
+          echo "Rebasing $BRANCH: $UPSTREAM ($OLD_SHA) → $NEW ($NEW_SHA)"
+          git fetch --no-tags upstream tag "$NEW"
+          # Race guard: the fetched tag must be the exact commit check-upstream saw.
+          got="$(git rev-parse "${NEW}^{commit}")"
+          if [ "$got" != "$NEW_SHA" ]; then
+            echo "ABORT: $NEW resolved to $got, not the detected $NEW_SHA (tag moved mid-sync)."
+            echo "moved=1" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # Rebase onto the commit by sha, off our pinned base sha, not the tag (tags can move).
+          if ! git rebase --onto "$NEW_SHA" "$OLD_SHA" "$BRANCH"; then
+            git rebase --abort || true
+            echo "conflict=1" >> "$GITHUB_OUTPUT"; exit 0   # handled by the issue step; don't fail
+          fi
+          # Re-pin the tag and its commit.
+          sed -i "s|^UPSTREAM=.*|UPSTREAM=$NEW|; s|^UPSTREAM_SHA=.*|UPSTREAM_SHA=$NEW_SHA|" .digilab/version.env
+          git add .digilab/version.env
+          git commit -m "DIGILAB: rebase onto $NEW ($NEW_SHA)"
+          echo "new=$NEW" >> "$GITHUB_OUTPUT"
+
+      - name: Tag moved mid-sync → open issue
+        if: steps.rebase.outputs.moved == '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue create --label sync-failure \
+            --title "digichat: ${{ steps.check.outputs.latest }} moved between detection and fetch" \
+            --body "The tag resolved to a different commit than check-upstream saw, so this run aborted to avoid building an unexpected commit. Re-run the sync." || true
+
+      - name: Rebase conflict → open issue
+        if: steps.rebase.outputs.conflict == '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue create --label sync-failure \
+            --title "digichat: rebase onto ${{ steps.check.outputs.latest }} failed, patches need a refresh" \
+            --body "Our commits no longer apply cleanly to \`${{ steps.check.outputs.latest }}\`. A maintainer must resolve manually:
+          \`\`\`
+          git fetch upstream tag ${{ steps.check.outputs.latest }}
+          git rebase --onto ${{ steps.check.outputs.latest }} <old-tag> $BRANCH   # resolve conflicts
+          # set UPSTREAM=${{ steps.check.outputs.latest }} in .digilab/version.env, then push
+          \`\`\`" || true
+
+      - name: Build + license-gate + push image
+        if: steps.rebase.outputs.new != ''
+        id: build
+        uses: ./.github/actions/build-digichat
+        with:
+          image: ${{ env.IMAGE }}
+          registry-user: ${{ secrets.GITLAB_REGISTRY_USER }}
+          registry-token: ${{ secrets.GITLAB_REGISTRY_PASSWORD }}
+
+      - name: Require a pushed image (never move the branch without one)
+        if: steps.rebase.outputs.new != '' && steps.build.outputs.pushed != 'true'
+        run: |
+          echo "::error::Sync built the image but did not push it (registry creds missing?). Branch and tags not moved."
+          exit 1
+
+      - name: Publish branch + tags (only after a green, pushed build)
+        if: steps.build.outcome == 'success' && steps.build.outputs.pushed == 'true'
+        run: |
+          source .digilab/version.env
+          NEW="$UPSTREAM"; REL="v${NEW#v}-digilab.${PATCHREV}"
+          git push --force-with-lease origin "$BRANCH"
+          git push origin "refs/tags/$NEW" || true        # keep the upstream base tag in the fork
+          git tag -f "$REL"; git push -f origin "refs/tags/$REL"   # our per-image release tag
+          {
+            echo "### digichat synced to $NEW"
+            echo "- image digest: \`${{ steps.build.outputs.digest }}\`"
+            echo "- pin this digest in the Flux \`digikluster-test\` values (reviewed MR) to deploy."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Build/push failed → open issue
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue create --label sync-failure \
+            --title "digichat: build/push failed syncing to ${{ steps.check.outputs.latest }}" \
+            --body "The rebase onto \`${{ steps.check.outputs.latest }}\` succeeded but build/license-gate/push failed (run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}). The branch was not moved. A maintainer should investigate." || true

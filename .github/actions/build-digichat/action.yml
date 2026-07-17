@@ -1,0 +1,187 @@
+# DIGILAB: build the clean Team-Edition image, run the license gate, and push to the GitLab
+# registry. Shared by digichat-build.yml (manual/tag) and digichat-sync.yml (which rebases the
+# tree in place first, then calls this on the working copy). The caller checks out the repo
+# (and, for sync, rebases it) before invoking this.
+name: build-digichat
+description: Build clean digichat TE image, license-gate, and push to the GitLab registry.
+
+inputs:
+  image:
+    description: Image repository (no tag), e.g. registry.gitlab.com/.../digichat
+    required: true
+  registry-user:
+    description: GitLab registry username (deploy token)
+    required: true
+  registry-token:
+    description: GitLab registry token (write_registry)
+    required: true
+  push:
+    description: Push the image after building
+    default: 'true'
+
+outputs:
+  image-ref:
+    description: Full image ref built (image:tag)
+    value: ${{ steps.v.outputs.image_ref }}
+  digest:
+    description: Pushed image digest (empty if not pushed)
+    value: ${{ steps.push.outputs.digest }}
+  pushed:
+    description: Whether the image was actually pushed (true/false)
+    value: ${{ steps.gate.outputs.push }}
+
+runs:
+  using: composite
+  steps:
+    - name: Derive version
+      id: v
+      shell: bash
+      run: |
+        source .digilab/version.env                            # UPSTREAM, UPSTREAM_SHA, PATCHREV
+        BASE="${UPSTREAM#v}"
+        BN="${BASE}-digilab.${PATCHREV}"
+        # Tag the commit we build (HEAD), not $GITHUB_SHA. On a sync run the rebase makes a new
+        # HEAD, so $GITHUB_SHA (the commit that triggered the run) points at the wrong tree.
+        SHA="$(git rev-parse HEAD)"
+        TAG="${BN}-${SHA:0:7}"
+        {
+          echo "build_number=${BN}"
+          echo "image_tag=${TAG}"
+          echo "image_ref=${{ inputs.image }}:${TAG}"
+          echo "upstream=${UPSTREAM}"
+          echo "upstream_sha=${UPSTREAM_SHA}"
+          echo "sha=${SHA}"
+        } >> "$GITHUB_OUTPUT"
+
+    - uses: actions/setup-go@v5
+      with:
+        go-version-file: server/.go-version                    # upstream's pinned Go
+        cache-dependency-path: server/go.sum                   # cache Go module + build cache
+    - uses: actions/setup-node@v5
+      with:
+        node-version-file: .nvmrc
+        cache: npm                                             # cache the npm download cache
+        cache-dependency-path: webapp/package-lock.json
+
+    # Check the source version matches version.env, so we can't tag an image 11.7.7 while
+    # building 11.7.6 (e.g. after a rebase without bumping version.env:UPSTREAM).
+    - name: 'Guard: source matches version.env UPSTREAM'
+      shell: bash
+      run: |
+        WANT="${{ steps.v.outputs.upstream }}"; WANT="${WANT#v}"
+        # version.go lists versions newest-first, so the first entry is the current one. Match
+        # against that, not the whole file: a stale UPSTREAM would still appear lower down and a
+        # match-anywhere check would pass it.
+        CUR="$(grep -oE '"[0-9]+\.[0-9]+\.[0-9]+"' server/public/model/version.go | head -1 | tr -d '"')"
+        [ "$CUR" = "$WANT" ] \
+          || { echo "::error::version.go current version=$CUR but version.env UPSTREAM=$WANT (rebased without bumping version.env, or vice versa)"; exit 1; }
+    - name: 'Guard: our patches present'
+      shell: bash
+      run: |
+        test "$(grep -rl 'DIGILAB:' server | wc -l)" -ge 1 \
+          || { echo "fewer than 3 DIGILAB-marked files; our patches are missing (building plain upstream?)"; exit 1; }
+
+    # Confirm we build the commit Mattermost actually tagged, and that GitHub signed it. Stops
+    # us from building an old, unpatched tree while labelling it as a current version.
+    - name: 'Guard: upstream provenance (tag matches pinned sha, built on it, signed)'
+      shell: bash
+      run: |
+        source .digilab/version.env                                  # UPSTREAM, UPSTREAM_SHA
+        git remote get-url upstream >/dev/null 2>&1 || git remote add upstream https://github.com/mattermost/mattermost.git
+        git fetch --no-tags upstream tag "$UPSTREAM" -q
+        # 1) the upstream tag must resolve to the commit we pinned
+        got="$(git rev-parse "${UPSTREAM}^{commit}")"
+        [ "$got" = "$UPSTREAM_SHA" ] || { echo "::error::upstream tag $UPSTREAM = $got, not the pinned $UPSTREAM_SHA"; exit 1; }
+        # 2) HEAD must be built on that commit (our patches sit on top; needs history, see fetch-depth)
+        git merge-base --is-ancestor "$UPSTREAM_SHA" HEAD || { echo "::error::HEAD is not built on $UPSTREAM_SHA"; exit 1; }
+        # 3) the commit must have a good GitHub signature (Mattermost signs commits via GitHub, not tags)
+        curl -fsSL https://github.com/web-flow.gpg | gpg --import 2>/dev/null || true
+        git verify-commit "$UPSTREAM_SHA" 2>&1 | grep -q 'Good signature' \
+          || { echo "::error::$UPSTREAM_SHA is not a Good GitHub signature"; exit 1; }
+        echo "provenance OK: $UPSTREAM == $UPSTREAM_SHA (GitHub-signed), HEAD built on it"
+
+    - name: 'Build (clean Team Edition: no enterprise dir, real BUILD_NUMBER, no plugins)'
+      shell: bash
+      working-directory: server
+      run: |
+        make build-client build-linux-amd64 package-linux-amd64 \
+          BUILD_NUMBER='${{ steps.v.outputs.build_number }}' PLUGIN_PACKAGES=
+        ls -la dist/*linux-amd64.tar.gz
+
+    - name: License gate (fail on Source-Available / non-permissive)
+      shell: bash
+      env:
+        LICENSE_GATE_STRICT: '1'   # the build ran first, so a skipped binary check (check 2) is a failure, not optional
+      run: .digilab/license-gate.sh
+
+    # The upstream Dockerfile downloads the package (curl -L $MM_PACKAGE | tar); it doesn't copy
+    # a local file. We already built the tarball, so we serve it over localhost (Buildx host
+    # networking) and pass that URL, rather than forking the Dockerfile.
+    - uses: docker/setup-buildx-action@v3
+      with:
+        driver-opts: network=host                  # buildkit container on the host network
+        buildkitd-flags: --allow-insecure-entitlement network.host
+
+    - name: Serve the compiled package to the build (see note above)
+      shell: bash
+      run: |
+        python3 -m http.server 8000 --directory server/dist >/tmp/http.log 2>&1 &
+        for _ in $(seq 1 50); do curl -sf http://localhost:8000/ >/dev/null 2>&1 && break; sleep 0.2; done
+
+    # Push only when asked and both creds are set. Otherwise still build the image (this
+    # exercises the buildx/localhost path) but skip the push, so a run without secrets stays
+    # green instead of failing. The sync workflow requires a push and checks the `pushed` output.
+    - name: Resolve push
+      id: gate
+      shell: bash
+      env:
+        U: ${{ inputs.registry-user }}
+        T: ${{ inputs.registry-token }}
+      run: |
+        if [ "${{ inputs.push }}" = "true" ] && [ -n "$U" ] && [ -n "$T" ]; then
+          echo "push=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "push=false" >> "$GITHUB_OUTPUT"
+          # Use `if`, not `[ … ] && echo`: a false test as the step's last command would make it
+          # exit non-zero under `set -e` and fail an otherwise fine no-push run.
+          if [ "${{ inputs.push }}" = "true" ]; then
+            echo "::warning::Registry credentials empty; built the image to validate but did not push. Set GITLAB_REGISTRY_USER/GITLAB_REGISTRY_PASSWORD to push."
+          fi
+        fi
+
+    - name: Log in to the GitLab registry
+      if: steps.gate.outputs.push == 'true'
+      uses: docker/login-action@v3
+      with:
+        registry: registry.gitlab.com
+        username: ${{ inputs.registry-user }}
+        password: ${{ inputs.registry-token }}
+
+    - name: Build image (upstream Dockerfile) and push
+      id: build
+      uses: docker/build-push-action@v6
+      with:
+        context: server/build
+        file: server/build/Dockerfile
+        network: host                              # so RUN steps can reach localhost:8000
+        allow: network.host
+        build-args: MM_PACKAGE=http://localhost:8000/mattermost-team-linux-amd64.tar.gz
+        push: ${{ steps.gate.outputs.push }}
+        tags: ${{ steps.v.outputs.image_ref }}
+        labels: |
+          org.opencontainers.image.version=${{ steps.v.outputs.build_number }}
+          org.opencontainers.image.source=https://github.com/${{ github.repository }}
+          org.opencontainers.image.revision=${{ steps.v.outputs.sha }}
+          nl.digilab.upstream-version=${{ steps.v.outputs.upstream }}
+          nl.digilab.upstream-sha=${{ steps.v.outputs.upstream_sha }}
+        cache-from: type=gha                       # reuse the apt/document-tooling layer
+        cache-to: type=gha,mode=max
+
+    - name: Record pushed digest
+      id: push
+      if: steps.gate.outputs.push == 'true'
+      shell: bash
+      run: |
+        DIGEST="${{ inputs.image }}@${{ steps.build.outputs.digest }}"   # pin by digest, not tag
+        echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+        { echo "### Pushed"; echo "\`$DIGEST\`"; } >> "$GITHUB_STEP_SUMMARY"
