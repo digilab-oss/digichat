@@ -174,8 +174,40 @@ runs:
           org.opencontainers.image.revision=${{ steps.v.outputs.sha }}
           nl.digilab.upstream-version=${{ steps.v.outputs.upstream }}
           nl.digilab.upstream-sha=${{ steps.v.outputs.upstream_sha }}
-        cache-from: type=gha                       # reuse the apt/document-tooling layer
-        cache-to: type=gha,mode=max
+        no-cache: true
+        # No layer cache. The Dockerfile's `curl $MM_PACKAGE | tar` step has a constant cache key
+        # (MM_PACKAGE is a fixed localhost URL every build), but its real input — the freshly
+        # compiled tarball we serve — changes per version. A gha cache hit there would package a
+        # STALE binary (e.g. tag an image 11.7.7 that actually contains 11.7.6). The heavy Go/Node
+        # compile is cached separately (setup-go/setup-node), so skipping the image layer cache is
+        # cheap and guarantees the image contains the binary we just built.
+
+    # The tag says 11.7.7, but does the BINARY inside? Run it and read the version it was compiled
+    # with (BUILD_NUMBER + git commit are baked into the binary via ldflags — they can't be faked
+    # without recompiling). This is the gate that catches a mislabeled/stale image before we ever
+    # record its digest for deploy. Runs the pushed image by digest, so it checks the exact artifact.
+    - name: 'Guard: image binary reports the expected version + commit (not just the tag)'
+      if: steps.gate.outputs.push == 'true'
+      shell: bash
+      run: |
+        ref='${{ inputs.image }}@${{ steps.build.outputs.digest }}'
+        want='${{ steps.v.outputs.build_number }}'   # e.g. 11.7.7-digilab.1 (the Build Number ldflag)
+        sha='${{ steps.v.outputs.sha }}'             # the git commit we built (the Build Hash ldflag)
+        echo "Reading the compiled build info from the pushed image (the binary, not the tag)..."
+        out="$(timeout 120 docker run --rm --entrypoint mattermost "$ref" version 2>&1 || true)"
+        echo "$out"
+        [ -n "$out" ] || { echo "::error::could not run 'mattermost version' from the image"; exit 1; }
+        # 1) Build Number must be exactly what we intended — catches a stale/old binary under a new tag.
+        echo "$out" | grep -qiF "$want" || {
+          echo "::error::image reports a Build Number other than '$want' — it does NOT contain the expected version (stale layer / mislabeled). Failing before the digest is recorded."
+          exit 1
+        }
+        # 2) Build Hash must be the exact commit we built — source provenance, can't be faked without recompiling.
+        echo "$out" | grep -qiF "$sha" || {
+          echo "::error::image's Build Hash is not $sha — not built from the expected commit. Failing."
+          exit 1
+        }
+        echo "verified: image contains build $want, compiled from commit $sha"
 
     - name: Record pushed digest
       id: push
