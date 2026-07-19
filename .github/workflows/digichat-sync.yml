@@ -164,11 +164,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh workflow list --all --json name,path,state \
-            | jq -r '.[] | select(.state=="active") | select(.path | test("/digichat-") | not) | .path' \
-            | while read -r wf; do
-                echo "disabling $wf"
-                gh workflow disable "$wf" || echo "::warning::could not disable $wf"
+          sleep 10   # let GitHub register any workflow files this push just added or changed
+          # Disable by numeric id (gh workflow disable wants an id or bare filename, not a path).
+          # Only real workflow files (path under .github/workflows/) — skips GitHub's built-in
+          # dynamic workflows (Dependency Graph, Dependabot, Pages), which 422 on disable.
+          gh workflow list --all --json id,name,path,state \
+            | jq -r '.[] | select(.state=="active") | select(.path | startswith(".github/workflows/")) | select(.path | test("/digichat-") | not) | "\(.id)\t\(.name)"' \
+            | while IFS="$(printf '\t')" read -r id name; do
+                echo "disabling $name ($id)"
+                gh workflow disable "$id" || echo "::warning::could not disable $name ($id)"
               done
 
 # Alerting is intentionally minimal: any non-advance above fails the run RED, and GitHub's own
