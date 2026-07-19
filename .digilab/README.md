@@ -41,6 +41,28 @@ is the exact diff.
 - **Provenance**: the build refuses unless the upstream tag resolves to the pinned commit SHA,
   HEAD is built on it, and the commit is GitHub-signed; images carry the upstream tag/SHA labels.
 
+## Verifying an image really contains the version it claims
+
+The image *tag* is only a label — it does not prove what binary is inside. The trustworthy trace
+is baked into the **binary itself** via ldflags at compile time and cannot be changed without
+recompiling: `Version`, `Build Number` (`<upstream>-digilab.<rev>`), and `Build Hash` (the git
+commit). Read it from any image or running pod:
+
+```
+# any image, by tag or digest:
+docker run --rm --entrypoint mattermost <image>@<digest> version
+# a running pod:
+kubectl exec deploy/mattermost -- mmctl version
+```
+
+`Build Number` must match the deployed tag, and `Build Hash` must match the git commit (also on the
+image's `org.opencontainers.image.revision` label and the `nl.digilab.upstream-*` labels). The build
+**enforces this automatically**: after pushing, it runs the binary from the pushed image and fails
+the run if it doesn't report the expected version — so a stale/mislabeled image (e.g. an 11.7.7 tag
+carrying an 11.7.6 binary) can never have its digest recorded for deploy. This is why we pin by
+**digest**, not tag, and why the layer cache is disabled (a cached package layer once shipped an old
+binary under a new tag).
+
 ## Upstream CI in the fork
 
 We **keep** upstream's `.github/workflows/*` files (our commits only add files, never delete
