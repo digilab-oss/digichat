@@ -9,7 +9,7 @@ maintained by [Digilab](https://digilab.overheid.nl) (Dutch government).
 
 ## What changes
 
-Four small changes, each marked `// DIGILAB:` in-tree:
+Five small changes, each marked `// DIGILAB:` in-tree:
 
 - **GitLab/Authentik login button** restored on unlicensed Team Edition (`server/config/client.go`).
 - **v11 250-user cap lifted** (`server/channels/app/limits.go`).
@@ -17,6 +17,8 @@ Four small changes, each marked `// DIGILAB:` in-tree:
   ships only AGPL + Apache (`server/cmd/mmctl/commands/compliance_export.go`).
 - **Digilab flask on the login button**, which signs in through Authentik
   (`webapp/channels/src/components/widgets/icons/login_gitlab_icon.tsx`).
+- **Incoming webhooks post only to their own channel**, regardless of role permissions
+  (`server/channels/app/webhook.go`).
 
 Everything else is stock upstream. Exact diff: `git range-diff <base-tag> release-11.7-digilab`.
 

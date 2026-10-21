@@ -813,6 +813,18 @@ func (a *App) HandleIncomingWebhook(rctx request.CTX, hookID string, req *model.
 	}
 	hook = result.Data
 
+	// DIGILAB: see IncomingWebhook.NamesOwnChannel.
+	if channelName != "" {
+		own, err := a.Srv().Store().Channel().Get(hook.ChannelId, true)
+		if err != nil {
+			return model.NewAppError("HandleIncomingWebhook", "app.channel.get.find.app_error", map[string]any{"channel_id": hook.ChannelId}, "", http.StatusInternalServerError).Wrap(err)
+		}
+		if !hook.NamesOwnChannel(channelName, own) {
+			return model.NewAppError("HandleIncomingWebhook", "web.incoming_webhook.channel_locked.app_error", map[string]any{"channel_id": hook.ChannelId}, "", http.StatusForbidden)
+		}
+		channelName = ""
+	}
+
 	uchan := make(chan store.StoreResult[*model.User], 1)
 	go func() {
 		user, err := a.Srv().Store().User().Get(context.Background(), hook.UserId)
@@ -912,7 +924,8 @@ func (a *App) HandleIncomingWebhook(rctx request.CTX, hookID string, req *model.
 		channel = result2.Data
 	}
 
-	if hook.ChannelLocked && hook.ChannelId != channel.Id {
+	// DIGILAB: see IncomingWebhook.MayPostTo.
+	if !hook.MayPostTo(channel.Id) {
 		return model.NewAppError("HandleIncomingWebhook", "web.incoming_webhook.channel_locked.app_error", map[string]any{"channel_id": channel.Id}, "", http.StatusForbidden)
 	}
 

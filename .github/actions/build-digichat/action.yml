@@ -80,6 +80,14 @@ runs:
       run: |
         test "$(grep -rl 'DIGILAB:' server | wc -l)" -ge 3 \
           || { echo "fewer than 3 DIGILAB-marked files; our patches are missing (building plain upstream?)"; exit 1; }
+    - name: 'Guard: incoming webhooks post only to their own channel'
+      shell: bash
+      run: |
+        for call in 'if !hook.NamesOwnChannel(channelName, own)' 'if !hook.MayPostTo(channel.Id)'; do
+          grep -qF "$call" server/channels/app/webhook.go \
+            || { echo "::error::HandleIncomingWebhook no longer runs: $call"; exit 1; }
+        done
+        cd server/public && go test ./model -run '^TestDigilabIncomingWebhook' -count=1
 
     # Confirm we build the commit Mattermost actually tagged, and that GitHub signed it. Stops
     # us from building an old, unpatched tree while labelling it as a current version.

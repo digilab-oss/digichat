@@ -79,10 +79,9 @@ func createIncomingHook(c *Context, w http.ResponseWriter, r *http.Request) {
 		userId = hook.UserId
 	}
 
-	if !c.App.SessionHasPermissionToTeam(*c.AppContext.Session(), channel.TeamId, model.PermissionBypassIncomingWebhookChannelLock) {
-		hook.ChannelLocked = true
-		hook.ChannelId = channel.Id
-	}
+	// DIGILAB: stored as locked, as HandleIncomingWebhook enforces; see IncomingWebhook.MayPostTo.
+	hook.ChannelLocked = true
+	hook.ChannelId = channel.Id
 
 	incomingHook, err := c.App.CreateIncomingWebhookForChannel(userId, channel, &hook)
 	if err != nil {
@@ -183,10 +182,9 @@ func updateIncomingHook(c *Context, w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if !c.App.SessionHasPermissionToTeam(*c.AppContext.Session(), channel.TeamId, model.PermissionBypassIncomingWebhookChannelLock) {
-		updatedHook.ChannelLocked = true
-		updatedHook.ChannelId = channel.Id
-	}
+	// DIGILAB: stored as locked, as HandleIncomingWebhook enforces; see IncomingWebhook.MayPostTo.
+	updatedHook.ChannelLocked = true
+	updatedHook.ChannelId = channel.Id
 
 	incomingHook, err := c.App.UpdateIncomingWebhook(oldHook, &updatedHook)
 	if err != nil {

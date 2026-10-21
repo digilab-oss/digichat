@@ -4,9 +4,9 @@ How the fork is built, license-gated, and kept in sync. Overview / front page:
 [`.github/README.md`](../.github/README.md). Full rationale:
 `ecosystem/messaging/digi-messenger/docs/mattermost/v11-self-hosting-runway.md`.
 
-## The four changes, in detail
+## The five changes, in detail
 
-Four commits on `release-11.7-digilab` (base tag in `version.env`):
+Five commits on `release-11.7-digilab` (base tag in `version.env`):
 
 | File | Change |
 |---|---|
@@ -14,6 +14,7 @@ Four commits on `release-11.7-digilab` (base tag in `version.env`):
 | `server/channels/app/limits.go` | Remove the v11 TE **250-user cap** — zero `maxUsersLimit`/`maxUsersHardLimit` (`isAtUserLimit` short-circuits at 0). |
 | `server/cmd/mmctl/commands/compliance_export.go` | Add `//go:build enterprise` so the one file importing the Source-Available `message_export/shared` drops from the tag-less TE build. Its `_test.go` files carry the same tag. |
 | `webapp/channels/src/components/widgets/icons/login_gitlab_icon.tsx` | Show the **Digilab flask** on the GitLab login button, which signs in through Authentik. Upstream tests asserting the GitLab icon stay untouched (they don't run here). |
+| `server/channels/app/webhook.go` | An incoming webhook posts **only to its own channel**. The hook's `ChannelLocked` flag and the roles' `bypass_incoming_webhook_channel_lock` are not consulted: a role reset restores the permission, and `mmctl --local webhook modify-incoming` without `--lock-to-channel` clears the flag. A request naming another channel is refused before that name is resolved, and `server/channels/api4/webhook.go` stores every hook as locked. The rules are in `server/public/model/incoming_webhook_digilab.go`; the build fails if `HandleIncomingWebhook` stops calling them or their tests fail. Upstream tests that create or post through an unlocked hook fail; they don't run here. |
 
 `grep -rn 'DIGILAB:' server webapp` is the live inventory; `git range-diff <base-tag> release-11.7-digilab`
 is the exact diff.
