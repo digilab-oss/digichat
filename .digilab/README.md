@@ -4,17 +4,18 @@ How the fork is built, license-gated, and kept in sync. Overview / front page:
 [`.github/README.md`](../.github/README.md). Full rationale:
 `ecosystem/messaging/digi-messenger/docs/mattermost/v11-self-hosting-runway.md`.
 
-## The three changes, in detail
+## The four changes, in detail
 
-Three commits on `release-11.7-digilab` (base tag in `version.env`):
+Four commits on `release-11.7-digilab` (base tag in `version.env`):
 
 | File | Change |
 |---|---|
 | `server/config/client.go` | Restore the GitLab/Authentik **login button** on unlicensed TE — v11 gated it behind a licence ("Move Gitlab SSO to Professional"); we set the button props unconditionally in `GenerateLimitedClientConfig`. |
 | `server/channels/app/limits.go` | Remove the v11 TE **250-user cap** — zero `maxUsersLimit`/`maxUsersHardLimit` (`isAtUserLimit` short-circuits at 0). |
 | `server/cmd/mmctl/commands/compliance_export.go` | Add `//go:build enterprise` so the one file importing the Source-Available `message_export/shared` drops from the tag-less TE build. Its `_test.go` files carry the same tag. |
+| `webapp/channels/src/components/widgets/icons/login_gitlab_icon.tsx` | Show the **Digilab flask** on the GitLab login button, which signs in through Authentik. Upstream tests asserting the GitLab icon stay untouched (they don't run here). |
 
-`grep -rn 'DIGILAB:' server` is the live inventory; `git range-diff <base-tag> release-11.7-digilab`
+`grep -rn 'DIGILAB:' server webapp` is the live inventory; `git range-diff <base-tag> release-11.7-digilab`
 is the exact diff.
 
 ## Build & release
@@ -67,7 +68,7 @@ binary under a new tag).
 
 We **keep** upstream's `.github/workflows/*` files (our commits only add files, never delete
 upstream ones) so a rebase never hits a `modify/delete` conflict when upstream edits its own CI —
-the only conflicts left are genuine ones in the three patched files. Those upstream workflows are
+the only conflicts left are genuine ones in the patched files. Those upstream workflows are
 **disabled via repo state** (`gh workflow disable`, which survives rebases), so they never run.
 The committed source of truth is the sync's *Keep upstream CI disabled* step, which re-asserts this
 after each advance for any workflow a future release adds. The existing set just needs disabling

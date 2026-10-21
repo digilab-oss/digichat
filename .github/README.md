@@ -9,12 +9,14 @@ maintained by [Digilab](https://digilab.overheid.nl) (Dutch government).
 
 ## What changes
 
-Three small backend commits, each marked `// DIGILAB:` in-tree:
+Four small changes, each marked `// DIGILAB:` in-tree:
 
 - **GitLab/Authentik login button** restored on unlicensed Team Edition (`server/config/client.go`).
 - **v11 250-user cap lifted** (`server/channels/app/limits.go`).
 - **mmctl kept license-clean** — drops the one file importing Source-Available code, so the image
   ships only AGPL + Apache (`server/cmd/mmctl/commands/compliance_export.go`).
+- **Digilab flask on the login button**, which signs in through Authentik
+  (`webapp/channels/src/components/widgets/icons/login_gitlab_icon.tsx`).
 
 Everything else is stock upstream. Exact diff: `git range-diff <base-tag> release-11.7-digilab`.
 
